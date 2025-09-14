@@ -1,36 +1,30 @@
 import asyncio
-import anyio
 import json
 import logging
 import os.path
 
-import voluptuous as vol
-
-from homeassistant.components.climate import (
-    ClimateEntity,
-    ClimateEntityFeature,
-    PLATFORM_SCHEMA,
-)
-from homeassistant.components.climate.const import (
-    HVACMode,
-    HVAC_MODES,
-    ATTR_HVAC_MODE,
-)
+import aiofiles
+from homeassistant.components.climate import ClimateEntity, ClimateEntityFeature
+from homeassistant.components.climate.const import ATTR_HVAC_MODE, HVAC_MODES, HVACMode
 from homeassistant.const import (
-    CONF_NAME,
-    STATE_ON,
-    STATE_OFF,
-    STATE_UNKNOWN,
-    STATE_UNAVAILABLE,
     ATTR_TEMPERATURE,
-    PRECISION_TENTHS,
-    PRECISION_HALVES,
+    CONF_NAME,
     PRECISION_WHOLE,
+    STATE_OFF,
+    STATE_ON,
+    STATE_UNAVAILABLE,
+    STATE_UNKNOWN,
 )
-from homeassistant.core import callback
-from homeassistant.helpers.event import async_track_state_change
-import homeassistant.helpers.config_validation as cv
+from homeassistant.core import Event, EventStateChangedData, callback
+from homeassistant.helpers.event import (
+    ATTR_HVAC_MODE,
+    HVAC_MODES,
+    ClimateEntityFeature,
+    HVACMode,
+    async_track_state_change_event,
+)
 from homeassistant.helpers.restore_state import RestoreEntity
+
 from . import COMPONENT_ABS_DIR, Helper
 from .controller import get_controller
 
@@ -48,26 +42,16 @@ CONF_HUMIDITY_SENSOR = "humidity_sensor"
 CONF_POWER_SENSOR = "power_sensor"
 CONF_POWER_SENSOR_RESTORE_STATE = "power_sensor_restore_state"
 
-SUPPORT_FLAGS = ClimateEntityFeature.TARGET_TEMPERATURE | ClimateEntityFeature.FAN_MODE | ClimateEntityFeature.TURN_OFF | ClimateEntityFeature.TURN_ON
-
-PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
-    {
-        vol.Optional(CONF_UNIQUE_ID): cv.string,
-        vol.Optional(CONF_NAME, default=DEFAULT_NAME): cv.string,
-        vol.Required(CONF_DEVICE_CODE): cv.positive_int,
-        vol.Required(CONF_CONTROLLER_DATA): cv.string,
-        vol.Optional(CONF_DELAY, default=DEFAULT_DELAY): cv.positive_float,
-        vol.Optional(CONF_TEMPERATURE_SENSOR): cv.entity_id,
-        vol.Optional(CONF_HUMIDITY_SENSOR): cv.entity_id,
-        vol.Optional(CONF_POWER_SENSOR): cv.entity_id,
-        vol.Optional(CONF_POWER_SENSOR_RESTORE_STATE, default=False): cv.boolean,
-    }
+SUPPORT_FLAGS = (
+    ClimateEntityFeature.TURN_OFF |
+    ClimateEntityFeature.TURN_ON |
+    ClimateEntityFeature.TARGET_TEMPERATURE |
+    ClimateEntityFeature.FAN_MODE
 )
-
 
 async def async_setup_platform(hass, config, async_add_entities, discovery_info=None):
     """Set up the IR Climate platform."""
-    _LOGGER.debug("Setting up the startir platform")
+    _LOGGER.debug("Setting up the smartir platform")
     device_code = config.get(CONF_DEVICE_CODE)
     device_files_subdir = os.path.join("codes", "climate")
     device_files_absdir = os.path.join(COMPONENT_ABS_DIR, device_files_subdir)
@@ -101,14 +85,15 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
             )
             return
 
-    async with await anyio.open_file(device_json_path) as j:
-        try:
+    try:
+        async with aiofiles.open(device_json_path, mode='r') as j:
             _LOGGER.debug(f"loading json file {device_json_path}")
-            device_data = json.loads(await j.read())
+            content = await j.read()
+            device_data = json.loads(content)
             _LOGGER.debug(f"{device_json_path} file loaded")
-        except Exception:
-            _LOGGER.error("The device Json file is invalid")
-            return
+    except Exception:
+        _LOGGER.error("The device JSON file is invalid")
+        return
 
     async_add_entities([SmartIRClimate(hass, config, device_data)])
 
@@ -197,27 +182,24 @@ class SmartIRClimate(ClimateEntity, RestoreEntity):
                 self._last_on_operation = last_state.attributes["last_on_operation"]
 
         if self._temperature_sensor:
-            async_track_state_change(
-                self.hass, self._temperature_sensor, self._async_temp_sensor_changed
-            )
+            async_track_state_change_event(self.hass, self._temperature_sensor, 
+                                           self._async_temp_sensor_changed)
 
             temp_sensor_state = self.hass.states.get(self._temperature_sensor)
             if temp_sensor_state and temp_sensor_state.state != STATE_UNKNOWN:
                 self._async_update_temp(temp_sensor_state)
 
         if self._humidity_sensor:
-            async_track_state_change(
-                self.hass, self._humidity_sensor, self._async_humidity_sensor_changed
-            )
+            async_track_state_change_event(self.hass, self._humidity_sensor, 
+                                           self._async_humidity_sensor_changed)
 
             humidity_sensor_state = self.hass.states.get(self._humidity_sensor)
             if humidity_sensor_state and humidity_sensor_state.state != STATE_UNKNOWN:
                 self._async_update_humidity(humidity_sensor_state)
 
         if self._power_sensor:
-            async_track_state_change(
-                self.hass, self._power_sensor, self._async_power_sensor_changed
-            )
+            async_track_state_change_event(self.hass, self._power_sensor, 
+                                           self._async_power_sensor_changed)
 
     @property
     def unique_id(self):
@@ -417,30 +399,31 @@ class SmartIRClimate(ClimateEntity, RestoreEntity):
             except Exception as e:
                 _LOGGER.exception(e)
 
-    async def _async_temp_sensor_changed(self, entity_id, old_state, new_state):
-        """Handle temperature sensor changes."""
+    @callback
+    async def _async_temp_sensor_changed(self, event: Event[EventStateChangedData]) -> None:
+        new_state = event.data["new_state"]
         if new_state is None:
             return
-
         self._async_update_temp(new_state)
         self.async_write_ha_state()
 
-    async def _async_humidity_sensor_changed(self, entity_id, old_state, new_state):
-        """Handle humidity sensor changes."""
+    @callback
+    async def _async_humidity_sensor_changed(self, event: Event[EventStateChangedData]) -> None:
+        new_state = event.data["new_state"]
         if new_state is None:
             return
-
         self._async_update_humidity(new_state)
         self.async_write_ha_state()
 
-    async def _async_power_sensor_changed(self, entity_id, old_state, new_state):
-        """Handle power sensor changes."""
+    @callback
+    async def _async_power_sensor_changed(self, event: Event[EventStateChangedData]) -> None:
+        entity_id = event.data["entity_id"]
+        old_state = event.data["old_state"]
+        new_state = event.data["new_state"]
         if new_state is None:
             return
-
         if old_state is not None and new_state.state == old_state.state:
             return
-
         if new_state.state == STATE_ON and self._hvac_mode == HVACMode.OFF:
             self._on_by_remote = True
             if (
@@ -450,9 +433,7 @@ class SmartIRClimate(ClimateEntity, RestoreEntity):
                 self._hvac_mode = self._last_on_operation
             else:
                 self._hvac_mode = STATE_ON
-
             self.async_write_ha_state()
-
         if new_state.state == STATE_OFF:
             self._on_by_remote = False
             if self._hvac_mode != HVACMode.OFF:
