@@ -16,13 +16,7 @@ from homeassistant.const import (
     STATE_UNKNOWN,
 )
 from homeassistant.core import Event, EventStateChangedData, callback
-from homeassistant.helpers.event import (
-    ATTR_HVAC_MODE,
-    HVAC_MODES,
-    ClimateEntityFeature,
-    HVACMode,
-    async_track_state_change_event,
-)
+from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.restore_state import RestoreEntity
 
 from . import COMPONENT_ABS_DIR, Helper

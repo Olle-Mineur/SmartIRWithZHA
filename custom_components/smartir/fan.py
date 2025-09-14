@@ -4,33 +4,20 @@ import logging
 import os.path
 
 import aiofiles
-import anyio
 import homeassistant.helpers.config_validation as cv
 import voluptuous as vol
 from homeassistant.components.fan import (
-    ATTR_OSCILLATING,
     DIRECTION_FORWARD,
     DIRECTION_REVERSE,
     FanEntity,
     FanEntityFeature,
+    PLATFORM_SCHEMA,
 )
 from homeassistant.const import CONF_NAME, STATE_OFF, STATE_ON, STATE_UNKNOWN
 from homeassistant.core import Event, EventStateChangedData, callback
-from homeassistant.helpers.event import (
-    CONF_NAME,
-    DIRECTION_FORWARD,
-    DIRECTION_REVERSE,
-    PLATFORM_SCHEMA,
-    STATE_OFF,
-    STATE_ON,
-    STATE_UNKNOWN,
-    FanEntity,
-    FanEntityFeature,
-    async_track_state_change,
-    async_track_state_change_event,
-)
-from homeassistant.helpers.restore_state import (
-    RestoreEntity,
+from homeassistant.helpers.event import async_track_state_change_event
+from homeassistant.helpers.restore_state import RestoreEntity
+from homeassistant.util.percentage import (
     ordered_list_item_to_percentage,
     percentage_to_ordered_list_item,
 )
@@ -57,7 +44,7 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
         vol.Optional(CONF_NAME, default=DEFAULT_NAME): cv.string,
         vol.Required(CONF_DEVICE_CODE): cv.positive_int,
         vol.Required(CONF_CONTROLLER_DATA): cv.string,
-        vol.Optional(CONF_DELAY, default=DEFAULT_DELAY): cv.string,
+        vol.Optional(CONF_DELAY, default=DEFAULT_DELAY): cv.positive_float,
         vol.Optional(CONF_POWER_SENSOR): cv.entity_id,
     }
 )
@@ -263,11 +250,11 @@ class SmartIRFan(FanEntity, RestoreEntity):
         await self.send_command()
         self.async_write_ha_state()
 
-    async def async_DIRECTION(self, direction: str):
+    async def async_set_direction(self, direction: str):
         """Set the direction of the fan"""
         self._direction = direction
 
-        if not self._speed.lower() == SPEED_OFF:
+        if self._speed and self._speed.lower() != SPEED_OFF:
             await self.send_command()
 
         self.async_write_ha_state()
@@ -294,7 +281,8 @@ class SmartIRFan(FanEntity, RestoreEntity):
             direction = self._direction or "default"
             oscillating = self._oscillating
 
-            if speed.lower() == SPEED_OFF:
+            # guard against None speed
+            if not speed or speed.lower() == SPEED_OFF:
                 command = self._commands["off"]
             elif oscillating:
                 command = self._commands["oscillate"]
