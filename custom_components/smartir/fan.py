@@ -1,28 +1,40 @@
 import asyncio
-import anyio
 import json
 import logging
 import os.path
 
+import aiofiles
+import anyio
+import homeassistant.helpers.config_validation as cv
 import voluptuous as vol
-
 from homeassistant.components.fan import (
+    ATTR_OSCILLATING,
+    DIRECTION_FORWARD,
+    DIRECTION_REVERSE,
     FanEntity,
     FanEntityFeature,
-    PLATFORM_SCHEMA,
-    DIRECTION_REVERSE,
-    DIRECTION_FORWARD,
-    ATTR_OSCILLATING,
 )
 from homeassistant.const import CONF_NAME, STATE_OFF, STATE_ON, STATE_UNKNOWN
-from homeassistant.core import callback
-from homeassistant.helpers.event import async_track_state_change
-import homeassistant.helpers.config_validation as cv
-from homeassistant.helpers.restore_state import RestoreEntity
-from homeassistant.util.percentage import (
+from homeassistant.core import Event, EventStateChangedData, callback
+from homeassistant.helpers.event import (
+    CONF_NAME,
+    DIRECTION_FORWARD,
+    DIRECTION_REVERSE,
+    PLATFORM_SCHEMA,
+    STATE_OFF,
+    STATE_ON,
+    STATE_UNKNOWN,
+    FanEntity,
+    FanEntityFeature,
+    async_track_state_change,
+    async_track_state_change_event,
+)
+from homeassistant.helpers.restore_state import (
+    RestoreEntity,
     ordered_list_item_to_percentage,
     percentage_to_ordered_list_item,
 )
+
 from . import COMPONENT_ABS_DIR, Helper
 from .controller import get_controller
 
@@ -86,14 +98,15 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
             )
             return
 
-    async with await anyio.open_file(device_json_path) as j:
-        try:
+    try:
+        async with aiofiles.open(device_json_path, mode='r') as j:
             _LOGGER.debug(f"loading json file {device_json_path}")
-            device_data = json.loads(await j.read())
+            content = await j.read()
+            device_data = json.loads(content)
             _LOGGER.debug(f"{device_json_path} file loaded")
-        except Exception:
-            _LOGGER.error("The device JSON file is invalid")
-            return
+    except Exception:
+        _LOGGER.error("The device JSON file is invalid")
+        return
 
     async_add_entities([SmartIRFan(hass, config, device_data)])
 
@@ -119,11 +132,19 @@ class SmartIRFan(FanEntity, RestoreEntity):
         self._direction = None
         self._last_on_speed = None
         self._oscillating = None
-        self._support_flags = FanEntityFeature.SET_SPEED
+        self._support_flags = (
+            FanEntityFeature.SET_SPEED
+            | FanEntityFeature.TURN_OFF
+            | FanEntityFeature.TURN_ON)
 
         if DIRECTION_REVERSE in self._commands and DIRECTION_FORWARD in self._commands:
             self._direction = DIRECTION_REVERSE
-            self._support_flags = self._support_flags | FanEntityFeature.DIRECTION
+            self._support_flags = (
+                self._support_flags | FanEntityFeature.DIRECTION)
+        if ('oscillate' in self._commands):
+            self._oscillating = False
+            self._support_flags = (
+                self._support_flags | FanEntityFeature.OSCILLATE)
 
         self._temp_lock = asyncio.Lock()
         self._on_by_remote = False
@@ -147,21 +168,18 @@ class SmartIRFan(FanEntity, RestoreEntity):
             if "speed" in last_state.attributes:
                 self._speed = last_state.attributes["speed"]
 
-            # If _direction has a value the direction controls appears
-            # in UI even if FanEntityFeature.DIRECTION is not provided in the flags
-            if (
-                "direction" in last_state.attributes
-                and self._support_flags & FanEntityFeature.DIRECTION
-            ):
-                self._direction = last_state.attributes["direction"]
+            #If _direction has a value the direction controls appears
+            #in UI even if SUPPORT_DIRECTION is not provided in the flags
+            if ('direction' in last_state.attributes and \
+                self._support_flags & FanEntityFeature.DIRECTION):
+                self._direction = last_state.attributes['direction']
 
             if "last_on_speed" in last_state.attributes:
                 self._last_on_speed = last_state.attributes["last_on_speed"]
 
             if self._power_sensor:
-                async_track_state_change(
-                    self.hass, self._power_sensor, self._async_power_sensor_changed
-                )
+                async_track_state_change_event(self.hass, self._power_sensor,
+                                                self._async_power_sensor_changed)
 
     @property
     def unique_id(self):
@@ -288,8 +306,13 @@ class SmartIRFan(FanEntity, RestoreEntity):
             except Exception as e:
                 _LOGGER.exception(e)
 
-    async def _async_power_sensor_changed(self, entity_id, old_state, new_state):
+    @callback
+    async def _async_power_sensor_changed(self, event: Event[EventStateChangedData]) -> None:
         """Handle power sensor changes."""
+        entity_id = event.data["entity_id"]
+        old_state = event.data["old_state"]
+        new_state = event.data["new_state"]
+
         if new_state is None:
             return
 
